@@ -1,77 +1,72 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <unistd.h>
 #include "spp_interface.h"
 
-#define EPHEMERAL_SRC       0
-#define ANY_DEST            0
-#define TEST_BEACON_DATA   99
+#define SLEEP_PERIOD_SEC      1
+#define COOLDOWN_PERIOD_SEC   5
 
 int main (int argc, char *argv[])
 {
-  int comPort = 2;
-  char mode[3] = {'8', 'N', '1'};
-  char testBuff[18] = "Testing this out!";
-  SPP_DataPacket_t packet;
-  bool paired = false;
+  int32_t comPort = 2;
+  uint8_t sensorData = 0;
+  int32_t cooldown = 0;
 
   /* Get the RS-232 port from the argument list */
   if (argc == 2)
   {
     comPort = atoi(argv[1]);
-    printf("Using COM%d\n", comPort);
+    printf("MAIN: Using COM%d\n", comPort);
   }
   else
   {
-    printf("Defaulting to COM2\n");
+    printf("MAIN: Defaulting to COM2\n");
   }
 
-  if (SPP_InitiatePairing(EPHEMERAL_SRC, ANY_DEST, comPort) == SPP_FAILURE)
+  if (SPP_InitiatePairing(EPHEMERAL_SRC, TO_ANY_DEVICE, comPort) == SPP_FAILURE)
   {
-    printf("Could not initiate Pairing. Listening for devices.\n");
+    printf("MAIN: Could not initiate pairing\n");
   }
 
   while (1)
   {
-    /* Send sensor data if paired to another device */
-    if (paired)
+    if (SPP_IsPaired())
     {
-      if (SPP_TransmitBeacon(TEST_BEACON_DATA) == SPP_FAILURE)
+      /* Update sensor data if paired to another device */
+      sensorData++;
+      SPP_UpdateSensorData(sensorData);
+    }
+    else
+    {
+      /* If not paired, try again after a cooldown */
+      if (cooldown >= COOLDOWN_PERIOD_SEC)
       {
-        printf("Failed to transmit sensor data\n");
+        printf("MAIN: Re-attempting to initiate pairing\n");
+
+        /* First free up the RS-232 port */
+        SPP_TerminatePairing();
+
+        /* Then initiate a new pairing */
+        if (SPP_InitiatePairing(EPHEMERAL_SRC, TO_ANY_DEVICE, comPort) == SPP_FAILURE)
+        {
+          printf("MAIN: Pairing attempt failed\n");
+        }
+        cooldown = 0;
+      }
+      else
+      {
+        cooldown++;
       }
     }
 
-    /* Listen for messages from other devices */
-    if (SPP_Listen(&packet) == SPP_SUCCESS)
+    /* Execute the simple pairing protocol */
+    if (SPP_ServiceProtocol() == SPP_FAILURE)
     {
-      switch (packet.action)
-      {
-        case HELLO:
-        {
-          /* A pairing was initiated by another device */
-          printf("Paired with device (address %d)\n", packet.source);
-          paired = true;
-          break;
-        }
-        case BEACON:
-        {
-          printf("Received sensor data: %d\n", packet.sensorData);
-          break;
-        }
-        case GOODBYE:
-        {
-          printf("Pairing with device (address %d) was terminated\n", packet.source);
-          break;
-        }
-        case ACK:
-        default:
-        {
-          /* Ignore the message */
-          break;
-        }
-      }
+      //printf("SPP failure\n");
     }
+
+    sleep(SLEEP_PERIOD_SEC);
   }
 
 }
