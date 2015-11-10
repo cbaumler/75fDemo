@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include "spp_interface.h"
 
+/* Macro Definitions */
+
 /* Period of time to sleep between executing the main loop */
 #define SLEEP_PERIOD_SEC        1
 
@@ -13,7 +15,16 @@
 /* Maximum amount of time by which to vary the cooldown period */
 #define MAX_COOLDOWN_RAND_SEC   5
 
-/* This function tests the SPP interface */
+/* Function Declarations */
+
+/* This function tests the SPP interface. It accepts an integer representing
+ * the RS-232 port to use as an input when the executable is launched from
+ * the command line. If none is specified, it defaults to the 2nd port on
+ * the host machine. This function services the SPP every SLEEP_PERIOD_SEC
+ * seconds. When unpaired, it attempts to pair periodically as defined by
+ * the cool down period. Once a pairing has been achieved, the sensor data
+ * is periodically updated.
+ */
 int main (int argc, char *argv[])
 {
   int32_t  comPort = 2;
@@ -33,6 +44,10 @@ int main (int argc, char *argv[])
     printf("MAIN: Defaulting to COM2\n");
   }
 
+  /*
+   * Attempt to pair with any other device using an ephemeral address for
+   * this device.
+   */
   if (SPP_InitiatePairing(EPHEMERAL_SRC, TO_ANY_DEVICE, comPort) == SPP_FAILURE)
   {
     printf("MAIN: Could not initiate pairing\n");
@@ -56,14 +71,20 @@ int main (int argc, char *argv[])
         /* First free up the RS-232 port */
         SPP_TerminatePairing();
 
-        /* Then initiate a new pairing */
+        /*
+         * Then initiate a new pairing with any device using a new ephemeral
+         * address in case an address collision occurred previously.
+         */
         if (SPP_InitiatePairing(EPHEMERAL_SRC, TO_ANY_DEVICE, comPort) == SPP_FAILURE)
         {
           printf("MAIN: Pairing attempt failed\n");
         }
         /*
          * Since pairing will fail if both devices attempt to initiate
-         * simultaneously, introduce randomness into the cooldown period.
+         * simultaneously, introduce randomness into the cooldown period. Note
+         * that a more robust random number generator would be preferred for a
+         * production application. For example a cryptographically secure
+         * seed-based generator could be used.
          */
         cooldown = ((uint32_t)(rand()) % MAX_COOLDOWN_RAND_SEC);
       }
@@ -73,11 +94,15 @@ int main (int argc, char *argv[])
       }
     }
 
-    /* Execute the simple pairing protocol */
-    if (SPP_ServiceProtocol() == SPP_FAILURE)
-    {
-      //printf("SPP failure\n");
-    }
+    /*
+     * Service the simple pairing protocol. This will receive messages from
+     * other devices, send beacons, and handle lost connections. Error checking
+     * is not performed here, because this implementation has opted to rely
+     * primarily on console prints for error tracking rather than using a robust
+     * set of error codes. This was done for convenience and would be changed in
+     * a release version of the software.
+     */
+    SPP_ServiceProtocol();
 
     sleep(SLEEP_PERIOD_SEC);
   }

@@ -6,6 +6,8 @@
 #include <string.h>
 #include "spp_interface.h"
 
+/* Macro Definitions */
+
 /* RS-232 Baud Rate */
 #define BAUD_RATE         9600
 
@@ -15,12 +17,14 @@
 /* A timeout to prevent waiting forever to receive data on the RS-232 port */
 #define READ_TIMEOUT       1000
 
-/* Number of seconds in 10 minutes */
-#define TEN_SECS             10
+/* Time (seconds) between BEACON transmissions */
+#define BEACON_TX_SECS       10
 
 /* Return Codes for the RS-232 interface */
 #define RS232_SUCCESS         0
 #define RS232_FAILURE         1
+
+/* Type Declarations */
 
 /* Enumeration of actions performed in the Simple Pairing Protocol */
 typedef enum
@@ -48,6 +52,8 @@ typedef struct
   int32_t          idx;
 } PacketBuffer_t;
 
+/* Object Declarations */
+
 /* A buffer to store a partially received SPP packet */
 PacketBuffer_t thisDeviceDataBuffer = {.idx = 0};
 
@@ -60,14 +66,17 @@ static uint16_t pairedDeviceAddress = 0;
 /* Flag to keep track of whether the device has been paired */
 static bool devicePaired = false;
 
-/* Flag to prevent Beacon collisions where both devices are waiting for an ACK */
+/*
+ * Flag to prevent Beacon collisions that can occur if both devices send a
+ * BEACON at the same time and are blocked waiting for an ACK
+ */
 static bool clearToSendBeacon = false;
 
 /* The RS-232 port to use for communication with the paired device */
-static uint32_t theComPort = 0;
+static uint32_t thisDeviceComPort = 0;
 
 /* The RS-232 mode settings */
-static const char theMode[4] = {'8', 'N', '1', '\0'};
+static const char thisDeviceMode[4] = {'8', 'N', '1', '\0'};
 
 /* The last time a BEACON was sent by this device */
 static time_t thisDeviceLastBeaconTx = 0;
@@ -78,10 +87,25 @@ static time_t thisDeviceLastBeaconRx = 0;
 /* Sensor data reported by this device */
 static uint8_t thisDeviceSensorData = 0;
 
-/*
- * Compute a 16-bit checksum on an array of bytes. The implementation is
- * based on RFC 1071 - Computing the Internet checksum. Returns the checksum.
- */
+/* Function Declarations */
+
+ /*
+  * Function: checksum
+  *
+  * Description:
+  *   Compute a 16-bit checksum on an array of bytes. The implementation is
+  *   based on RFC 1071 - Computing the Internet checksum.
+  *
+  * Inputs:
+  *   addr     - the address of the data to compute the checksum over
+  *   numBytes - number of bytes to include in the checksum computation
+  *
+  * Returns:
+  *   The checksum
+  *
+  * Notes:
+  *   None
+  */
 static uint16_t checksum(uint8_t *addr, uint32_t numBytes)
 {
   uint32_t checksum = 0;
@@ -103,19 +127,47 @@ static uint16_t checksum(uint8_t *addr, uint32_t numBytes)
   return(~checksum);
 }
 
-/* Compute a checksum on an SPP packet. Returns the checksum. */
+/*
+ * Function: packetChecksum
+ *
+ * Description:
+ *   Compute a checksum on an SPP packet.
+ *
+ * Inputs:
+ *   packet - pointer to the packet to compute the checksum over
+ *
+ * Returns:
+ *   The checksum
+ *
+ * Notes:
+ *   Excludes the checksum field from the computation
+ */
 static uint16_t packetChecksum(SPP_DataPacket_t *packet)
 {
   /* Compute a checksum over the packet (excluding the checksum field) */
   return(checksum((char*)(packet), (sizeof(SPP_DataPacket_t) - sizeof(uint16_t))));
 }
 
-/*
- * Without blocking, copy all or part of a packet from the RS-232 port into
- * thisDeviceDataBuffer. Return 0 if a whole packet is not saved in the buffer.
- * Return the packet size if a whole packet is saved in the buffer,
- * and copy the packet into the location provided by the caller.
- */
+ /*
+  * Function: readComPortNonBlocking
+  *
+  * Description:
+  *   Without blocking, copy all or part of a packet from the RS-232 port into
+  *   thisDeviceDataBuffer. If thisDeviceDataBuffer is full, copy the packet
+  *   to the address provided by the caller.
+  *
+  * Inputs:
+  *   buf - address to return a copy of a complete packet
+  *
+  * Returns:
+  *   0 if a whole packet is not saved in the buffer
+  *   the packet size if a whole packet is saved in the buffer
+  *
+  * Notes:
+  *   This function relies on a single globally defined data buffer and is
+  *   not designed for use with multiple different data streams simultaneously.
+  *   This function interfaces with the RS-232 module.
+  */
 int32_t readComPortNonBlocking(SPP_DataPacket_t *buf)
 {
   int32_t bytesRemaining;
@@ -130,7 +182,7 @@ int32_t readComPortNonBlocking(SPP_DataPacket_t *buf)
   bytesRemaining = sizeof(SPP_DataPacket_t) - thisDeviceDataBuffer.idx;
 
   /* Attempt to receive data from the RS-232 port */
-  bytesReceived = RS232_PollComport(theComPort, writePtr, bytesRemaining);
+  bytesReceived = RS232_PollComport(thisDeviceComPort, writePtr, bytesRemaining);
   thisDeviceDataBuffer.idx += bytesReceived;
 
   /* Check if the buffer has been filled yet */
@@ -149,10 +201,23 @@ int32_t readComPortNonBlocking(SPP_DataPacket_t *buf)
   return (retval);
 }
 
-/*
- * Read a message from the RS-232 port. Blocks until the entire message is
- * received or the timeout occurs. Returns the number of bytes received.
- */
+ /*
+  * Function: readComPortBlocking
+  *
+  * Description:
+  *   Read a message from the RS-232 port. Blocks until the entire message is
+  *   received or the timeout occurs.
+  *
+  * Inputs:
+  *   buf - address to return a copy of the packet that is read
+  *
+  * Returns:
+  *   The number of bytes received
+  *
+  * Notes:
+  *   This function assumes the message to be read is sizeof(SPP_DataPacket_t).
+  *   This function interfaces with the RS-232 module.
+  */
 int32_t readComPortBlocking(SPP_DataPacket_t *buf)
 {
   int32_t timeout = 0;
@@ -164,7 +229,7 @@ int32_t readComPortBlocking(SPP_DataPacket_t *buf)
   while ((bytesRemaining > 0) && (timeout < READ_TIMEOUT))
   {
     /* Read up to bytesRemaining bytes from the port and save them in buf */
-    bytesReceived = RS232_PollComport(theComPort, writePtr, bytesRemaining);
+    bytesReceived = RS232_PollComport(thisDeviceComPort, writePtr, bytesRemaining);
     totalReceived += bytesReceived;
     bytesRemaining -= bytesReceived;
     writePtr += bytesReceived;
@@ -174,8 +239,24 @@ int32_t readComPortBlocking(SPP_DataPacket_t *buf)
   return (totalReceived);
 }
 
-/* Create an SPP ACK data packet, and send it to the specified destination */
-static int32_t sendAck(uint16_t destination)
+/*
+ * Function: sendAck
+ *
+ * Description:
+ *   Create an SPP ACK data packet, and send it to the device with the
+ *   specified destination address.
+ *
+ * Inputs:
+ *   destAddr - address of the destination device
+ *
+ * Returns:
+ *   SPP_SUCCESS - ACK sent successfully
+ *   SPP_FAILURE - RS232_SendBuf() failed to send all bytes
+ *
+ * Notes:
+ *   This function interfaces with the RS-232 module.
+ */
+static int32_t sendAck(uint16_t destAddr)
 {
   int32_t retval = SPP_FAILURE;
   SPP_DataPacket_t packet;
@@ -183,13 +264,13 @@ static int32_t sendAck(uint16_t destination)
 
   /* Create an ACK packet */
   packet.source = thisDeviceAddress;
-  packet.destination = destination;
+  packet.destination = destAddr;
   packet.action = ACK;
   packet.sensorData = 0;
   packet.checksum = packetChecksum(&packet);
 
   /* Send the ACK to the destination device */
-  bytesSent = RS232_SendBuf(theComPort, &packet, sizeof(packet));
+  bytesSent = RS232_SendBuf(thisDeviceComPort, &packet, sizeof(packet));
   if (bytesSent == sizeof(packet))
   {
     retval = SPP_SUCCESS;
@@ -198,6 +279,25 @@ static int32_t sendAck(uint16_t destination)
   return (retval);
 }
 
+/*
+ * Function: receiveAck
+ *
+ * Description:
+ *   Receive an SPP ACK data packet and verify its validity.
+ *
+ * Inputs:
+ *   sourceAddr - pointer for returning the address of the device
+ *                that sent the ACK
+ *
+ * Returns:
+ *   SPP_SUCCESS - Valid ACK was received
+ *   SPP_FAILURE - Timeout occurred or ACK was invalid
+ *
+ * Notes:
+ *   This function blocks until a valid ACK is received or the timeout occurs.
+ *   If this device is already paired, an ACK must come from the paired
+ *   device to be valid.
+ */
 static int32_t receiveAck(uint16_t *sourceAddr)
 {
   int32_t          timeout = 0;
@@ -235,6 +335,24 @@ static int32_t receiveAck(uint16_t *sourceAddr)
   return (retval);
 }
 
+/*
+ * Function: transmitBeacon
+ *
+ * Description:
+ *   Send a BEACON containing a sensor reading to the paired device. The
+ *   BEACON is only sent if enough time has passed since the last BEACON
+ *   was sent as determined by BEACON_TX_SECS.
+ *
+ * Inputs:
+ *   None
+ *
+ * Returns:
+ *   SPP_SUCCESS - BEACON was sent and acknowledged by the paired device
+ *   SPP_FAILURE - BEACON failed to send or was not acknowledged
+ *
+ * Notes:
+ *   This function blocks while waiting for an ACK from the paired device.
+ */
 static int32_t transmitBeacon(void)
 {
   SPP_DataPacket_t packet;
@@ -245,7 +363,7 @@ static int32_t transmitBeacon(void)
   uint16_t         ackSrcAddr;
 
   /* Calculate the time at which a new BEACON should be sent */
-  transmissionTime = thisDeviceLastBeaconTx + TEN_SECS;
+  transmissionTime = thisDeviceLastBeaconTx + BEACON_TX_SECS;
 
   /* Get the current time */
   currentTime = time(NULL);
@@ -262,7 +380,7 @@ static int32_t transmitBeacon(void)
 
     /* Send the BEACON */
     printf("SPP: Sending BEACON to %d\n", packet.destination);
-    bytesSent = RS232_SendBuf(theComPort, &packet, sizeof(packet));
+    bytesSent = RS232_SendBuf(thisDeviceComPort, &packet, sizeof(packet));
 
     if (bytesSent == sizeof(packet))
     {
@@ -280,6 +398,31 @@ static int32_t transmitBeacon(void)
   return (retval);
 }
 
+/*
+ * Function: processIncomingMessages
+ *
+ * Description:
+ *   Receive packets from other devices and take appropriate actions.
+ *
+ *   A HELLO results in a three-way handshake that concludes with
+ *   the establishment of a device pairing.
+ *
+ *   A BEACON results in an ACK sent to the paired device.
+ *
+ *   A GOODBYE results in an ACK sent to the paired device and the termination
+ *   of the current device pairing.
+ *
+ * Inputs:
+ *   None
+ *
+ * Returns:
+ *   SPP_SUCCESS - Actions completed successfully
+ *   SPP_FAILURE - An action failed
+ *
+ * Notes:
+ *   This function blocks while waiting for ACKs from the paired device.
+ *   This function does not block while receiving general packet data.
+ */
 static int32_t processIncomingMessages(void)
 {
   int32_t          bytesReceived;
@@ -348,8 +491,10 @@ static int32_t processIncomingMessages(void)
               /* Update the record of when the last BEACON was received */
               thisDeviceLastBeaconRx = time(NULL);
 
-              /* Having received a BEACON from the pairing initiator, this
-               * device is now clear to send Beacons as well
+              /*
+               * Having received a BEACON from the pairing initiator, this
+               * device is now clear to send Beacons as well. This prevents
+               * a deadlock where both devices are blocked waiting for ACKs.
                */
               clearToSendBeacon = true;
 
@@ -395,6 +540,23 @@ static int32_t processIncomingMessages(void)
   return (retval);
 }
 
+/*
+ * Function: checkForLostConnection
+ *
+ * Description:
+ *   Terminate the current device pairing if the paired device stops
+ *   sending BEACONs.
+ *
+ * Inputs:
+ *   None
+ *
+ * Returns:
+ *   None
+ *
+ * Notes:
+ *   This function blocks while waiting for an ACK in response to a GOODBYE
+ *   to terminate the current pairing.
+ */
 static void checkForLostConnection(void)
 {
   time_t  currentTime;
@@ -404,7 +566,7 @@ static void checkForLostConnection(void)
     currentTime = time(NULL);
 
     /* Check if the BEACON from the paired device is overdue */
-    if (currentTime > (thisDeviceLastBeaconRx + TEN_SECS))
+    if (currentTime > (thisDeviceLastBeaconRx + BEACON_TX_SECS))
     {
       /* The other device is not sending BEACONS. Terminate the pairing. */
       printf("SPP: No BEACON received from %d\n", pairedDeviceAddress);
@@ -413,26 +575,35 @@ static void checkForLostConnection(void)
   }
 }
 
-/*
- *
- *
- * Inputs:
- *   srcAddr  - optional address to use for this device (use 0 to have
- *              one assigned at random)
- *   destAddr - optional address of device to pair with (use 0 to pair
- *              with first device to respond)
- *   comPort  - The RS-232 port to use for communication
- *
- * Returns:
- *   SPP_SUCCESS if pairing is successful
- *   SPP_FAILURE if pairing fails
- *
- * Notes:
- *   When relying on the protocol implemention to randomly assign a source
- *   address, the possibility of address collisions exists. To avoid collisions,
- *   provide a known unique address. Managing an address space shared across
- *   multiple devices is outside the scope of this protocol.
- */
+ /*
+  * Function: SPP_InitiatePairing
+  *
+  * Description:
+  *   Open the RS-232 port and initiate a device pairing using a three-way
+  *   handshake that starts with a HELLO packet. Assign the caller specified
+  *   srcAddr as this device's address or generate a random device address if
+  *   the caller specifies EPHEMERAL_SRC.
+  *
+  * Inputs:
+  *   srcAddr  - address of this device
+  *   destAddr - address of the device to pair with (can be TO_ANY_DEVICE)
+  *   comPort  - The RS-232 port to use for communication
+  *
+  * Returns:
+  *   SPP_SUCCESS - Pairing is successful
+  *   SPP_FAILURE - Pairing fails
+  *
+  * Notes:
+  *   When relying on the protocol implemention to randomly assign a source
+  *   address, the possibility of address collisions exists. To avoid collisions,
+  *   provide a known unique address. Managing an address space shared across
+  *   multiple devices is outside the scope of this protocol.
+  *   The three-way handshake is included for the case where a pairing is
+  *   initiated with the destination address of TO_ANY_DEVICE. If multiple
+  *   devices respond (ACK) to the initial HELLO, this device will select the
+  *   first response it receives and send an ACK. This way the devices that are
+  *   ignored will not falsely assume that they have been paired.
+  */
 int32_t SPP_InitiatePairing(uint16_t srcAddr, uint16_t destAddr, uint32_t comPort)
 {
   SPP_DataPacket_t packet;
@@ -467,12 +638,12 @@ int32_t SPP_InitiatePairing(uint16_t srcAddr, uint16_t destAddr, uint32_t comPor
     packet.checksum = packetChecksum(&packet);
 
     /* Open the comm port */
-    theComPort = comPort;
-    if (RS232_OpenComport(theComPort, BAUD_RATE, theMode) == RS232_SUCCESS)
+    thisDeviceComPort = comPort;
+    if (RS232_OpenComport(thisDeviceComPort, BAUD_RATE, thisDeviceMode) == RS232_SUCCESS)
     {
       /* Send the HELLO message */
       printf("SPP: Sending HELLO to %d\n", packet.destination);
-      bytesSent = RS232_SendBuf(theComPort, &packet, sizeof(packet));
+      bytesSent = RS232_SendBuf(thisDeviceComPort, &packet, sizeof(packet));
     }
   }
 
@@ -510,15 +681,31 @@ int32_t SPP_InitiatePairing(uint16_t srcAddr, uint16_t destAddr, uint32_t comPor
   return (retval);
 }
 
-/*
- * Note: SPP_InitiatePairing opens the com port whether or not it succeeds.
- * Thus, this function should be called to close the com port even if no pairing
- * has taken place. Also, this device terminates the pairing on this end
- * whether or not the paired device is able to communicate an ACK back to it.
- * This prevents the device from being tied up by a failure in the other
- * device. The return code will indicate whether or not the pairing termination
- * was cleanly accomplished.
- */
+ /*
+  * Function: SPP_TerminatePairing
+  *
+  * Description:
+  *   Terminate a device pairing by sending a GOODBYE and closing the RS-232
+  *   port. Block for an ACK from the paired device acknowledging the pairing
+  *   termination.
+  *
+  * Inputs:
+  *   None
+  *
+  * Returns:
+  *   SPP_SUCCESS - Pairing termination is successful
+  *   SPP_FAILURE - Pairing termination fails
+  *
+  * Notes:
+  *   Pairing may or may not actually be terminated on SPP_FAILURE. Call
+  *   SPP_IsPaired() to verify if the pairing is terminated.
+  *   SPP_InitiatePairing() opens the RS-232 port whether or not it succeeds.
+  *   Thus, this function should be called to close the port even if no pairing
+  *   has taken place. Also, this device terminates the pairing on this end
+  *   whether or not the paired device is able to communicate an ACK back to it.
+  *   This prevents the device from being tied up by a failure in the other
+  *   device.
+  */
 int32_t SPP_TerminatePairing(void)
 {
   SPP_DataPacket_t packet;
@@ -538,7 +725,7 @@ int32_t SPP_TerminatePairing(void)
 
     /* Send the GOODBYE message */
     printf("SPP: Sending GOODBYE to %d\n", pairedDeviceAddress);
-    bytesSent = RS232_SendBuf(theComPort, &packet, sizeof(packet));
+    bytesSent = RS232_SendBuf(thisDeviceComPort, &packet, sizeof(packet));
 
     if (bytesSent == sizeof(packet))
     {
@@ -565,19 +752,72 @@ int32_t SPP_TerminatePairing(void)
   }
 
   /* Close the RS-232 port to free up resources */
-  RS232_CloseComport(theComPort);
+  RS232_CloseComport(thisDeviceComPort);
 }
 
+/*
+ * Function: SPP_IsPaired
+ *
+ * Description:
+ *   Returns the status of the current device pairing.
+ *
+ * Inputs:
+ *   None
+ *
+ * Returns:
+ *   TRUE  - this device is currently paired with another device
+ *   FALSE - this device is not currently paired with any other device
+ *
+ * Notes:
+ *   None
+ */
 bool SPP_IsPaired(void)
 {
   return (devicePaired);
 }
 
+/*
+ * Function: SPP_UpdateSensorData
+ *
+ * Description:
+ *   Updates the internal record of the sensor data for this device.
+ *   This data is sent to the paired device as part of the BEACON.
+ *
+ * Inputs:
+ *   sensorData - the sensor data to copy into the interal record
+ *
+ * Returns:
+ *   None
+ *
+ * Notes:
+ *   This is a standalone function to allow for decoupling of data updates
+ *   with servicing the protocol. This allows data to be updated as part of
+ *   another thread of execution - for example during an interrupt.
+ */
 void SPP_UpdateSensorData(uint8_t sensorData)
 {
   thisDeviceSensorData = sensorData;
 }
 
+/*
+ * Function: SPP_ServiceProtocol
+ *
+ * Description:
+ *   This function handles incoming messages from other devices. It also checks
+ *   the connection to the paired device and terminates the pairing if the
+ *   connection is lost. Lastly, it sends the BEACON to the paired device.
+ *
+ * Inputs:
+ *   None
+ *
+ * Returns:
+ *   SPP_SUCCESS - Protocol was serviced successfully
+ *   SPP_FAILURE - A failure occurred during servicing
+ *
+ * Notes:
+ *   This function should be called periodically with period less than
+ *   BEACON_TX_SECS for correct operation of the Simple Pairing Protocol.
+ */
 int32_t SPP_ServiceProtocol(void)
 {
   int32_t retval = SPP_SUCCESS;
@@ -585,7 +825,6 @@ int32_t SPP_ServiceProtocol(void)
   if (processIncomingMessages() == SPP_FAILURE)
   {
     retval = SPP_FAILURE;
-    //printf("Failed to process incoming messages\n");
   }
 
   /* Terminate the pairing if the paired device is not sending a BEACON */
@@ -597,7 +836,6 @@ int32_t SPP_ServiceProtocol(void)
     if (transmitBeacon() == SPP_FAILURE)
     {
       retval = SPP_FAILURE;
-      //printf("Failed to transmit BEACON\n");
     }
   }
 
