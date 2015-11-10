@@ -87,7 +87,7 @@ This file contains a main function to test the SPP interface. It accepts an inte
 This file contains the Simple Pairing Protocol interface implementation as well as helper functions to perform underlying protocol tasks.
 
 **simple_packet_protocol/rs232.c**  
-This file contains a module for communicating via RS-232. It was authored by Teunis van Beelen and is available via the GNU General Public License.
+This file contains a module for communicating via RS-232. It was authored by Teunis van Beelen and is [available](http://www.teuniz.net/RS-232/) via the GNU General Public License.
 
 Note: This software was originally compiled on a Windows 7 machine using Cygwin. It was tested by running two instances connected to two virtual RS-232 ports running on the same machine.
 
