@@ -125,6 +125,12 @@
     <Compile Include="avr_compiler.h">
       <SubType>compile</SubType>
     </Compile>
+    <Compile Include="dummy_driver.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="dummy_driver.h">
+      <SubType>compile</SubType>
+    </Compile>
     <Compile Include="main.c">
       <SubType>compile</SubType>
     </Compile>
