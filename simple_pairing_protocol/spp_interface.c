@@ -104,7 +104,9 @@ static uint8_t thisDeviceSensorData = 0;
   *   The checksum
   *
   * Notes:
-  *   None
+  *   Checksums are computed for packets prior to transmission. However, this
+  *   implementation does not verify checksums of received packets. This design
+  *   detail is left as a future improvement.
   */
 static uint16_t checksum(uint8_t *addr, uint32_t numBytes)
 {

@@ -13,7 +13,7 @@
 #define TO_ANY_DEVICE   0
 
 /* Source address to specify during pairing initiation to be assigned a random address */
-#define EPHEMERAL_SRC       0
+#define EPHEMERAL_SRC   0
 
 /* Function Declarations */
 
