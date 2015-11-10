@@ -4,14 +4,23 @@
 #include <unistd.h>
 #include "spp_interface.h"
 
-#define SLEEP_PERIOD_SEC      1
-#define COOLDOWN_PERIOD_SEC   5
+/* Period of time to sleep between executing the main loop */
+#define SLEEP_PERIOD_SEC        1
 
+/* Period of time to wait before re-attempting pairing */
+#define COOLDOWN_PERIOD_SEC    10
+
+/* Maximum amount of time by which to vary the cooldown period */
+#define MAX_COOLDOWN_RAND_SEC   5
+
+/* This function tests the SPP interface */
 int main (int argc, char *argv[])
 {
-  int32_t comPort = 2;
-  uint8_t sensorData = 0;
-  int32_t cooldown = 0;
+  int32_t  comPort = 2;
+  uint8_t  sensorData = 0;
+  uint32_t cooldown = 0;
+
+  srand(time(NULL));
 
   /* Get the RS-232 port from the argument list */
   if (argc == 2)
@@ -52,7 +61,11 @@ int main (int argc, char *argv[])
         {
           printf("MAIN: Pairing attempt failed\n");
         }
-        cooldown = 0;
+        /*
+         * Since pairing will fail if both devices attempt to initiate
+         * simultaneously, introduce randomness into the cooldown period.
+         */
+        cooldown = ((uint32_t)(rand()) % MAX_COOLDOWN_RAND_SEC);
       }
       else
       {

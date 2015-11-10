@@ -10,7 +10,7 @@
 #define BAUD_RATE         9600
 
 /* A timeout to prevent waiting forever for an ACK message */
-#define ACK_TIMEOUT       10000
+#define ACK_TIMEOUT        5000
 
 /* A timeout to prevent waiting forever to receive data on the RS-232 port */
 #define READ_TIMEOUT       1000
